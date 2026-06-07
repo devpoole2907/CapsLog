@@ -121,6 +121,11 @@ actor SilverBulletClient {
     }
 
     func delete(path: String) async throws {
+        let serverConfiguration = try await serverConfiguration()
+        guard !serverConfiguration.readOnly else {
+            throw SilverBulletError.readOnly(path: path)
+        }
+
         let request = try makeRequest(path: fsPath(for: path), method: "DELETE")
         _ = try await perform(request)
     }

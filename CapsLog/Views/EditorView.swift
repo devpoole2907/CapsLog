@@ -59,7 +59,16 @@ struct EditorView: View {
                 }
             }
 
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                ShareLink(
+                    item: shareableNote,
+                    subject: Text(pageTitle),
+                    preview: SharePreview(pageTitle)
+                ) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .disabled(isShareDisabled)
+
                 if isEditing {
                     Button("Done", systemImage: "checkmark", action: finishEditing)
                         .buttonStyle(.borderedProminent)
@@ -98,6 +107,22 @@ struct EditorView: View {
         return last.lowercased().hasSuffix(".md")
             ? String(last.dropLast(3))
             : last
+    }
+
+    private var shareableNote: ShareableNote {
+        ShareableNote(
+            title: pageTitle,
+            path: viewModel.path,
+            body: viewModel.text
+        )
+    }
+
+    private var isShareDisabled: Bool {
+        if case .loading = viewModel.loadState, viewModel.text.isEmpty {
+            return true
+        }
+
+        return false
     }
 
     private func beginEditing() {

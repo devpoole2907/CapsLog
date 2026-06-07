@@ -4,6 +4,10 @@ import SwiftUI
 struct FileListContent: View {
     let files: [SpaceFile]
     let filterText: String
+    let shareableNote: @MainActor (SpaceFile) -> ShareableNote
+    let previewForFile: @MainActor (SpaceFile) -> NoteContextPreview
+    let requestDeleteFile: @MainActor (SpaceFile) -> Void
+    @Binding var selectedFileIDs: Set<SpaceFile.ID>
 
     @AppStorage("fileListPinnedPaths") private var pinnedPathsData = "[]"
     @State private var isPinnedSectionExpanded = true
@@ -20,7 +24,7 @@ struct FileListContent: View {
                 ContentUnavailableView.search
             }
         } else {
-            List {
+            List(selection: $selectedFileIDs) {
                 if !pinnedFiles.isEmpty {
                     Section {
                         if isPinnedSectionExpanded {
@@ -91,6 +95,34 @@ struct FileListContent: View {
         NavigationLink(value: PageRoute(path: file.path)) {
             FileRow(file: file)
         }
+        .tag(file.id)
+        .contextMenu {
+            ShareLink(
+                item: shareableNote(file),
+                subject: Text(file.title),
+                preview: SharePreview(file.title)
+            ) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+
+            Button {
+                togglePinned(file)
+            } label: {
+                Label(pinActionTitle(for: file), systemImage: pinActionImage(for: file))
+            }
+
+            if file.permission.isWritable {
+                Divider()
+
+                Button(role: .destructive) {
+                    requestDeleteFile(file)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        } preview: {
+            previewForFile(file)
+        }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
                 togglePinned(file)
@@ -98,6 +130,24 @@ struct FileListContent: View {
                 Label(pinActionTitle(for: file), systemImage: pinActionImage(for: file))
             }
             .tint(isPinned(file) ? .gray : .yellow)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if file.permission.isWritable {
+                Button(role: .destructive) {
+                    requestDeleteFile(file)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+
+            ShareLink(
+                item: shareableNote(file),
+                subject: Text(file.title),
+                preview: SharePreview(file.title)
+            ) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .tint(.blue)
         }
     }
 

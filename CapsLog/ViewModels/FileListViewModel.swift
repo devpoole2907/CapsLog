@@ -58,6 +58,23 @@ final class FileListViewModel {
         }
     }
 
+    func makePreviewViewModel(for file: SpaceFile) -> EditorViewModel {
+        EditorViewModel(
+            path: file.path,
+            client: client,
+            modelContext: modelContext
+        )
+    }
+
+    func shareableNote(for file: SpaceFile) -> ShareableNote {
+        ShareableNote(
+            title: file.title,
+            path: file.path,
+            body: localNoteBody(path: file.path),
+            client: client
+        )
+    }
+
     func loadInitial() async {
         loadFromCache()
         updatePendingWriteCount()
@@ -121,6 +138,30 @@ final class FileListViewModel {
             return error.userMessage
         } catch is CancellationError {
             return "File creation was cancelled."
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func deleteFile(_ file: SpaceFile) async -> String? {
+        guard file.permission.isWritable else {
+            return "This note is read-only and can't be deleted."
+        }
+
+        do {
+            try await client.delete(path: file.path)
+            cacheDeletedFile(path: file.path)
+            return nil
+        } catch let error as SilverBulletError {
+            switch error {
+            case .notFound:
+                cacheDeletedFile(path: file.path)
+                return nil
+            default:
+                return error.userMessage
+            }
+        } catch is CancellationError {
+            return "File deletion was cancelled."
         } catch {
             return error.localizedDescription
         }
@@ -232,6 +273,64 @@ final class FileListViewModel {
         }
 
         persistListing(files)
+    }
+
+    private func cacheDeletedFile(path: String) {
+        files.removeAll { $0.path == path }
+        deleteCachedFile(path: path)
+        deleteCachedPage(path: path)
+        deletePendingWrite(path: path)
+        try? modelContext.save()
+        updatePendingWriteCount()
+    }
+
+    private func localNoteBody(path: String) -> String? {
+        if let pendingWrite = fetchPendingWrite(path: path) {
+            return pendingWrite.body
+        }
+
+        return fetchCachedPage(path: path)?.body
+    }
+
+    private func fetchCachedPage(path: String) -> CachedPage? {
+        let descriptor = FetchDescriptor<CachedPage>(
+            predicate: #Predicate { $0.path == path }
+        )
+        return try? modelContext.fetch(descriptor).first
+    }
+
+    private func fetchPendingWrite(path: String) -> PendingWrite? {
+        let descriptor = FetchDescriptor<PendingWrite>(
+            predicate: #Predicate { $0.path == path }
+        )
+        return try? modelContext.fetch(descriptor).first
+    }
+
+    private func deleteCachedFile(path: String) {
+        let descriptor = FetchDescriptor<CachedFile>(
+            predicate: #Predicate { $0.path == path }
+        )
+        for cachedFile in (try? modelContext.fetch(descriptor)) ?? [] {
+            modelContext.delete(cachedFile)
+        }
+    }
+
+    private func deleteCachedPage(path: String) {
+        let descriptor = FetchDescriptor<CachedPage>(
+            predicate: #Predicate { $0.path == path }
+        )
+        for cachedPage in (try? modelContext.fetch(descriptor)) ?? [] {
+            modelContext.delete(cachedPage)
+        }
+    }
+
+    private func deletePendingWrite(path: String) {
+        let descriptor = FetchDescriptor<PendingWrite>(
+            predicate: #Predicate { $0.path == path }
+        )
+        for pendingWrite in (try? modelContext.fetch(descriptor)) ?? [] {
+            modelContext.delete(pendingWrite)
+        }
     }
 
     private func updatePendingWriteCount() {
