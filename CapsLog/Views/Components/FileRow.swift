@@ -6,13 +6,11 @@ struct FileRow: View {
     var body: some View {
         HStack {
             Label {
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(file.title)
-                    if !file.folder.isEmpty {
-                        Text(file.folder)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(FileListGrouping.rowSubtitle(for: file.lastModifiedDate))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } icon: {
                 Image(systemName: "doc.text")

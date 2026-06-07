@@ -28,10 +28,17 @@ final class FileListViewModel {
 
     var visibleFiles: [SpaceFile] {
         let trimmed = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return files
-            .filter { $0.isMarkdown }
+        let markdown = files.filter { $0.isMarkdown }
+
+        // Hide locked pages (the bundled `Library/Std`/API docs are served as
+        // read-only). If every page is read-only — e.g. the whole space is in
+        // read-only mode — fall back to showing them so the list isn't empty.
+        let writable = markdown.filter { $0.permission.isWritable }
+        let base = writable.isEmpty ? markdown : writable
+
+        return base
             .filter { trimmed.isEmpty || $0.path.localizedStandardContains(trimmed) }
-            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+            .sorted { $0.lastModified > $1.lastModified }
     }
 
     var suggestedNewFilePath: String {

@@ -2,9 +2,15 @@ import Foundation
 
 nonisolated enum SilverBulletMarkdownRenderer {
     static func prepare(_ source: String) -> String {
+        // Space Lua directives (`${ … }`) can't be evaluated by a native read
+        // client, so resolve them to their fallback text (or nothing) before any
+        // line-based processing. Doing this first also prevents the wiki-link
+        // regex from mangling Lua long brackets such as `query[[ … ]]`.
+        let withoutDirectives = renderingLuaDirectives(in: source)
+
         var isInsideFence = false
         var renderedLines: [String] = []
-        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = withoutDirectives.split(separator: "\n", omittingEmptySubsequences: false)
 
         for (index, line) in lines.enumerated() {
             let string = String(line)
@@ -33,6 +39,188 @@ nonisolated enum SilverBulletMarkdownRenderer {
         }
 
         return renderedLines.joined(separator: "\n")
+    }
+
+    /// Replaces Space Lua directives (`${ … }`) with their fallback text.
+    ///
+    /// A native read-only client can't run the Lua engine, so a directive such
+    /// as `${some(query[[ … ]]) or "No notes yet"}` is reduced to its trailing
+    /// `or "…"` fallback string, and directives without a fallback (for example
+    /// `${widgets.commandButton "Quick Note"}`) are removed entirely. The scan
+    /// is fence-aware and balances braces while skipping Lua string literals and
+    /// long brackets, so directives may span multiple lines.
+    private static func renderingLuaDirectives(in source: String) -> String {
+        let chars = Array(source)
+        let count = chars.count
+        var result = ""
+        result.reserveCapacity(count)
+
+        var index = 0
+        var isInsideFence = false
+        var isAtLineStart = true
+
+        while index < count {
+            if isAtLineStart, isFenceLine(chars, at: index) {
+                isInsideFence.toggle()
+            }
+
+            if !isInsideFence,
+               chars[index] == "$",
+               index + 1 < count,
+               chars[index + 1] == "{",
+               let directive = parseLuaDirective(chars, openingAt: index) {
+                result.append(contentsOf: directive.replacement)
+                index = directive.endIndex
+                isAtLineStart = false
+                continue
+            }
+
+            let character = chars[index]
+            result.append(character)
+            isAtLineStart = character == "\n"
+            index += 1
+        }
+
+        return result
+    }
+
+    /// Reports whether the line beginning at `index` opens or closes a code
+    /// fence (``` ``` ``` or `~~~`, ignoring leading whitespace).
+    private static func isFenceLine(_ chars: [Character], at index: Int) -> Bool {
+        var cursor = index
+        while cursor < chars.count, chars[cursor] == " " || chars[cursor] == "\t" {
+            cursor += 1
+        }
+        guard cursor + 2 < chars.count else {
+            return false
+        }
+        let fence: Character = chars[cursor] == "`" ? "`" : (chars[cursor] == "~" ? "~" : " ")
+        guard fence != " " else {
+            return false
+        }
+        return chars[cursor + 1] == fence && chars[cursor + 2] == fence
+    }
+
+    /// Parses a `${ … }` directive starting at `openingAt` (where `chars[openingAt]`
+    /// is `$` and the next character is `{`). Returns the index just past the
+    /// closing brace and the text it should be replaced with, or `nil` if the
+    /// braces are unbalanced (in which case the source is left untouched).
+    private static func parseLuaDirective(
+        _ chars: [Character],
+        openingAt openingIndex: Int
+    ) -> (endIndex: Int, replacement: String)? {
+        let count = chars.count
+        var cursor = openingIndex + 2
+        var depth = 1
+
+        while cursor < count {
+            let character = chars[cursor]
+
+            if character == "\"" || character == "'" {
+                cursor = endOfStringLiteral(chars, openingQuoteAt: cursor)
+                continue
+            }
+
+            if character == "[", let longBracketEnd = endOfLongBracket(chars, openingAt: cursor) {
+                cursor = longBracketEnd
+                continue
+            }
+
+            if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let inner = String(chars[(openingIndex + 2)..<cursor])
+                    return (cursor + 1, fallbackText(in: inner))
+                }
+            }
+
+            cursor += 1
+        }
+
+        return nil
+    }
+
+    /// Returns the index just past the closing quote of a Lua string literal
+    /// whose opening quote is at `openingQuoteAt`, honoring backslash escapes.
+    private static func endOfStringLiteral(
+        _ chars: [Character],
+        openingQuoteAt openingIndex: Int
+    ) -> Int {
+        let count = chars.count
+        let quote = chars[openingIndex]
+        var cursor = openingIndex + 1
+
+        while cursor < count {
+            if chars[cursor] == "\\" {
+                cursor += 2
+                continue
+            }
+            if chars[cursor] == quote {
+                return cursor + 1
+            }
+            cursor += 1
+        }
+
+        return count
+    }
+
+    /// If a Lua long bracket (`[[`, `[=[`, … ) opens at `openingAt`, returns the
+    /// index just past its matching close bracket. Returns `nil` when `openingAt`
+    /// is an ordinary `[` rather than a long bracket.
+    private static func endOfLongBracket(_ chars: [Character], openingAt openingIndex: Int) -> Int? {
+        let count = chars.count
+        var cursor = openingIndex + 1
+        var level = 0
+        while cursor < count, chars[cursor] == "=" {
+            level += 1
+            cursor += 1
+        }
+        guard cursor < count, chars[cursor] == "[" else {
+            return nil
+        }
+
+        cursor += 1
+        while cursor < count {
+            if chars[cursor] == "]" {
+                var lookahead = cursor + 1
+                var closingLevel = 0
+                while lookahead < count, chars[lookahead] == "=" {
+                    closingLevel += 1
+                    lookahead += 1
+                }
+                if closingLevel == level, lookahead < count, chars[lookahead] == "]" {
+                    return lookahead + 1
+                }
+            }
+            cursor += 1
+        }
+
+        return count
+    }
+
+    /// Extracts the trailing `or "…"` / `or '…'` fallback string from a directive
+    /// body, returning an empty string when there is none.
+    private static func fallbackText(in directive: String) -> String {
+        let pattern = #"\bor\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+            return ""
+        }
+
+        let source = directive as NSString
+        guard let match = expression.firstMatch(
+            in: directive,
+            range: NSRange(location: 0, length: source.length)
+        ) else {
+            return ""
+        }
+
+        let doubleQuoted = substring(for: match.range(at: 1), in: source)
+        let value = doubleQuoted.isEmpty
+            ? substring(for: match.range(at: 2), in: source)
+            : doubleQuoted
+        return value
     }
 
     private static func renderedTask(from line: String) -> String? {
